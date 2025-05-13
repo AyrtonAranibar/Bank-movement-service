@@ -5,6 +5,8 @@ import com.bank.ayrton.movement_service.api.movement.MovementService;
 import com.bank.ayrton.movement_service.dto.ClientDto;
 import com.bank.ayrton.movement_service.dto.ProductDto;
 import com.bank.ayrton.movement_service.entity.Movement;
+import com.bank.ayrton.movement_service.entity.MovementType;
+import com.bank.ayrton.movement_service.entity.ProductSubtype;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -25,16 +27,19 @@ public class MovementServiceImpl implements MovementService {
     private final WebClient clientWebClient;
     private final WebClient productWebClient;
 
+    // Lista los movimientos
     @Override
     public Flux<Movement> findAll() {
         return repository.findAll();
     }
 
+    // Busca por ID
     @Override
     public Mono<Movement> findById(String id) {
         return repository.findById(id);
     }
 
+    //registra un nuevo movimiento y hace validaciones
     @Override
     public Mono<Movement> save(Movement movement) {
         return clientWebClient.get()
@@ -49,54 +54,33 @@ public class MovementServiceImpl implements MovementService {
                                 .bodyToMono(ProductDto.class)
                                 .switchIfEmpty(Mono.error(new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found")))
                                 .flatMap(product -> {
-
-                                    //cliente empresarial no puede tener cuentas de ahorro ni plazo fijo
-                                    if (client.getType().equalsIgnoreCase("empresarial") &&
-                                            (product.getSubtype().equalsIgnoreCase("SAVINGS") ||
-                                                    product.getSubtype().equalsIgnoreCase("FIXED_TERM"))) {
-                                        return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "Un cliente empresarial no puede tener cuentas de ahorro ni de plazo fijo."));
-                                    }
-
-                                    //cliente personal no puede tener más de una cuenta por tipo (ahorro, corriente, plazo fijo)
-                                    if (client.getType().equalsIgnoreCase("personal") &&
-                                            (product.getSubtype().equalsIgnoreCase("SAVINGS") ||
-                                                    product.getSubtype().equalsIgnoreCase("CURRENT_ACCOUNT") ||
-                                                    product.getSubtype().equalsIgnoreCase("FIXED_TERM"))) {
-                                        return repository.findByClientId(client.getId())
-                                                .flatMap(existingMovement ->
-                                                        productWebClient.get()
-                                                                .uri("/api/v1/product/{id}", existingMovement.getProductId())
-                                                                .retrieve()
-                                                                .bodyToMono(ProductDto.class)
-                                                )
-                                                .filter(existingProduct -> existingProduct.getSubtype().equalsIgnoreCase(product.getSubtype()))
-                                                .hasElements()
-                                                .flatMap(alreadyExists -> {
-                                                    if (alreadyExists) {
-                                                        return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cliente personal ya tiene una cuenta de tipo " + product.getSubtype()));
-                                                    }
-                                                    return validarMovimiento(movement, product);
-                                                });
+                                    // Validación: el cliente debe tener tipo válido para tarjeta de crédito
+                                    if (product.getSubtype() == ProductSubtype.CREDIT_CARD &&
+                                            !"personal".equalsIgnoreCase(client.getType()) &&
+                                            !"empresarial".equalsIgnoreCase(client.getType())) {
+                                        return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "Tipo de cliente no válido para tarjeta de crédito."));
                                     }
 
                                     return validarMovimiento(movement, product);
                                 })
                 )
-                .onErrorResume(e -> Mono.error(new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage())));
+                .onErrorResume(ResponseStatusException.class, Mono::error)
+                .onErrorResume(e -> Mono.error(new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Error inesperado: " + e.getMessage())));
     }
+
 
     private Mono<Movement> validarMovimiento(Movement movement, ProductDto product) {
 
-        if (product.getSubtype().equalsIgnoreCase("FIXED_TERM") && movement.getType().name().equalsIgnoreCase("withdrawal")) {
+        //plazo fijo solo permite retiro en un día específico del mes
+        if (product.getSubtype() == ProductSubtype.FIXED_TERM && movement.getType() == MovementType.WITHDRAWAL) {
             int today = LocalDate.now().getDayOfMonth();
             if (product.getAllowedMovementDay() != null && product.getAllowedMovementDay() != today) {
                 return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "Movimiento no permitido: solo se puede hacer el día permitido."));
             }
         }
 
-        //si es una cuenta de ahorros y aun no supero el limite de movimientos
-        if (product.getSubtype().equalsIgnoreCase("SAVINGS") && product.getMonthlyMovementLimit() != null) {
-            // obtiene la fecha del primer dia del mes para contar los movimientos desde esa fecha
+        //cuenta de ahorro con limite de movimientos mensuales
+        if (product.getSubtype() == ProductSubtype.SAVINGS && product.getMonthlyMovementLimit() != null) {
             Date startOfMonth = Date.from(LocalDate.now().withDayOfMonth(1).atStartOfDay(ZoneId.systemDefault()).toInstant());
             return repository.findByProductIdAndDateAfter(movement.getProductId(), startOfMonth)
                     .count()
@@ -104,22 +88,43 @@ public class MovementServiceImpl implements MovementService {
                         if (count >= product.getMonthlyMovementLimit()) {
                             return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "Se superó el límite de movimientos mensuales para cuenta de ahorro."));
                         }
-                        return repository.save(movement);
+                        return actualizarBalanceYGuardar(product, movement);
                     });
         }
 
-        //si el producto es un credito y se intenta hacer un retiro
-        if ((product.getSubtype().contains("CREDIT") || product.getSubtype().equalsIgnoreCase("CREDIT_CARD"))
-                && movement.getType().name().equalsIgnoreCase("withdrawal")) {
-            // se valida que el monto no exceda el límite de crédito disponible
+        //no debe exceder el límite de credito disponible
+        if ((product.getSubtype() == ProductSubtype.PERSONAL_CREDIT ||
+                product.getSubtype() == ProductSubtype.BUSINESS_CREDIT ||
+                product.getSubtype() == ProductSubtype.CREDIT_CARD) &&
+                movement.getType() == MovementType.WITHDRAWAL) {
             if (product.getCreditLimit() != null && movement.getAmount() > product.getCreditLimit()) {
                 return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "El monto excede el límite de crédito."));
             }
         }
 
-        return repository.save(movement);
+        //se actualiza el balance y se guarda el movimiento
+        return actualizarBalanceYGuardar(product, movement);
     }
 
+    //ctualiza el saldo del producto dependiendo del tipo de movimiento
+    private Mono<Movement> actualizarBalanceYGuardar(ProductDto product, Movement movement) {
+        double currentBalance = product.getBalance() != null ? product.getBalance() : 0.0;
+
+        if (movement.getType() == MovementType.DEPOSIT) {
+            product.setBalance(currentBalance + movement.getAmount());
+        } else if (movement.getType() == MovementType.WITHDRAWAL) {
+            product.setBalance(currentBalance - movement.getAmount());
+        }
+
+        return productWebClient.put()
+                .uri("/api/v1/product/{id}", product.getId())
+                .bodyValue(product)
+                .retrieve()
+                .bodyToMono(ProductDto.class)
+                .then(repository.save(movement));
+    }
+
+    // Actualiza un movimiento existente por ID
     @Override
     public Mono<Movement> update(String id, Movement movement) {
         return repository.findById(id)
@@ -129,9 +134,9 @@ public class MovementServiceImpl implements MovementService {
                 });
     }
 
+    // Elimina un movimiento por ID
     @Override
     public Mono<Void> delete(String id) {
         return repository.deleteById(id);
     }
 }
-
