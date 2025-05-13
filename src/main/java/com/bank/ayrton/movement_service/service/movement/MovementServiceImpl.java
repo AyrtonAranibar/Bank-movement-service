@@ -94,7 +94,9 @@ public class MovementServiceImpl implements MovementService {
             }
         }
 
+        //si es una cuenta de ahorros y aun no supero el limite de movimientos
         if (product.getSubtype().equalsIgnoreCase("SAVINGS") && product.getMonthlyMovementLimit() != null) {
+            // obtiene la fecha del primer dia del mes para contar los movimientos desde esa fecha
             Date startOfMonth = Date.from(LocalDate.now().withDayOfMonth(1).atStartOfDay(ZoneId.systemDefault()).toInstant());
             return repository.findByProductIdAndDateAfter(movement.getProductId(), startOfMonth)
                     .count()
@@ -106,8 +108,10 @@ public class MovementServiceImpl implements MovementService {
                     });
         }
 
+        //si el producto es un credito y se intenta hacer un retiro
         if ((product.getSubtype().contains("CREDIT") || product.getSubtype().equalsIgnoreCase("CREDIT_CARD"))
                 && movement.getType().name().equalsIgnoreCase("withdrawal")) {
+            // se valida que el monto no exceda el límite de crédito disponible
             if (product.getCreditLimit() != null && movement.getAmount() > product.getCreditLimit()) {
                 return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "El monto excede el límite de crédito."));
             }
