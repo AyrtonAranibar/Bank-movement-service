@@ -10,4 +10,5 @@ public interface MovementService {
     Mono<Movement> save(Movement movement);
     Mono<Movement> update(String id, Movement movement);
     Mono<Void> delete(String id);
+    Flux<Movement> findByClientId(String clientId);
 }

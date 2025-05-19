@@ -8,6 +8,7 @@ import com.bank.ayrton.movement_service.entity.Movement;
 import com.bank.ayrton.movement_service.entity.MovementType;
 import com.bank.ayrton.movement_service.entity.ProductSubtype;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -19,6 +20,8 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.Date;
 
+//Simple Logging Facade for Java sirve para registrar logs
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class MovementServiceImpl implements MovementService {
@@ -30,18 +33,21 @@ public class MovementServiceImpl implements MovementService {
     // Lista los movimientos
     @Override
     public Flux<Movement> findAll() {
+        log.info("Obteniendo todos los movimientos");
         return repository.findAll();
     }
 
     // Busca por ID
     @Override
     public Mono<Movement> findById(String id) {
+        log.info("Buscando movimiento con ID: {}", id);
         return repository.findById(id);
     }
 
     //registra un nuevo movimiento y hace validaciones
     @Override
     public Mono<Movement> save(Movement movement) {
+        log.info("Registrando nuevo movimiento: {}", movement);
         return clientWebClient.get()
                 .uri("/api/v1/client/{id}", movement.getClientId())
                 .retrieve()
@@ -64,17 +70,24 @@ public class MovementServiceImpl implements MovementService {
                                     return validarMovimiento(movement, product);
                                 })
                 )
-                .onErrorResume(ResponseStatusException.class, Mono::error)
-                .onErrorResume(e -> Mono.error(new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Error inesperado: " + e.getMessage())));
+                .onErrorResume(ResponseStatusException.class, error -> {
+                    log.error("Error esperado: {}", error.getReason());
+                    return Mono.error(error);
+                })
+                .onErrorResume(error -> {
+                    log.error("Error inesperado: {}", error.getMessage());
+                    return Mono.error(new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Error inesperado"));
+                });
     }
 
 
     private Mono<Movement> validarMovimiento(Movement movement, ProductDto product) {
-
+        log.info("Validando movimiento para producto: {}", product.getId());
         //plazo fijo solo permite retiro en un día específico del mes
         if (product.getSubtype() == ProductSubtype.FIXED_TERM && movement.getType() == MovementType.WITHDRAWAL) {
             int today = LocalDate.now().getDayOfMonth();
             if (product.getAllowedMovementDay() != null && product.getAllowedMovementDay() != today) {
+                log.warn("Retiro no permitido: hoy es día {}, permitido solo el día {}", today, product.getAllowedMovementDay());
                 return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "Movimiento no permitido: solo se puede hacer el día permitido."));
             }
         }
@@ -84,8 +97,10 @@ public class MovementServiceImpl implements MovementService {
             Date startOfMonth = Date.from(LocalDate.now().withDayOfMonth(1).atStartOfDay(ZoneId.systemDefault()).toInstant());
             return repository.findByProductIdAndDateAfter(movement.getProductId(), startOfMonth)
                     .count()
-                    .flatMap(count -> {
-                        if (count >= product.getMonthlyMovementLimit()) {
+                    .flatMap(movementCount -> {
+                        log.info("Cantidad de movimientos este mes: {} / Límite permitido: {}", movementCount, product.getMonthlyMovementLimit());
+                        if (movementCount >= product.getMonthlyMovementLimit()) {
+
                             return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "Se superó el límite de movimientos mensuales para cuenta de ahorro."));
                         }
                         return actualizarBalanceYGuardar(product, movement);
@@ -98,6 +113,7 @@ public class MovementServiceImpl implements MovementService {
                 product.getSubtype() == ProductSubtype.CREDIT_CARD) &&
                 movement.getType() == MovementType.WITHDRAWAL) {
             if (product.getCreditLimit() != null && movement.getAmount() > product.getCreditLimit()) {
+                log.warn("Retiro excede el límite de crédito. Monto: {}, Límite: {}", movement.getAmount(), product.getCreditLimit());
                 return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "El monto excede el límite de crédito."));
             }
         }
@@ -115,6 +131,7 @@ public class MovementServiceImpl implements MovementService {
         } else if (movement.getType() == MovementType.WITHDRAWAL) {
             product.setBalance(currentBalance - movement.getAmount());
         }
+        log.info("Actualizando balance del producto {} nuevo saldo: {}", product.getId(), product.getBalance());
 
         return productWebClient.put()
                 .uri("/api/v1/product/{id}", product.getId())
@@ -127,6 +144,7 @@ public class MovementServiceImpl implements MovementService {
     // Actualiza un movimiento existente por ID
     @Override
     public Mono<Movement> update(String id, Movement movement) {
+        log.info("Actualizando movimiento con ID: {}", id);
         return repository.findById(id)
                 .flatMap(existing -> {
                     movement.setId(id);
@@ -137,6 +155,13 @@ public class MovementServiceImpl implements MovementService {
     // Elimina un movimiento por ID
     @Override
     public Mono<Void> delete(String id) {
+        log.info("Eliminando movimiento con ID: {}", id);
         return repository.deleteById(id);
+    }
+
+    @Override
+    public Flux<Movement> findByClientId(String clientId) {
+        log.info("Buscando movimientos por clientId: {}", clientId);
+        return repository.findByClientId(clientId);
     }
 }

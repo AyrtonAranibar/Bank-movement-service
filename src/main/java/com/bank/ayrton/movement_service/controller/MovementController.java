@@ -46,4 +46,9 @@ public class MovementController {
         return service.delete(id)
                 .then(Mono.just(ResponseEntity.noContent().<Void>build()));
     }
+
+    @GetMapping("/client/{clientId}")
+    public Flux<Movement> findByClientId(@PathVariable String clientId){
+        return service.findByClientId(clientId);
+    }
 }
