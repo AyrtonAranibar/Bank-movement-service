@@ -51,4 +51,11 @@ public class MovementController {
     public Flux<Movement> findByClientId(@PathVariable String clientId){
         return service.findByClientId(clientId);
     }
+
+    @PostMapping("/transfer")
+    public Mono<Void> transfer(@RequestParam String fromProductId,
+                               @RequestParam String toProductId,
+                               @RequestParam Double amount) {
+        return service.transfer(fromProductId, toProductId, amount);
+    }
 }

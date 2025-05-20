@@ -11,4 +11,5 @@ public interface MovementService {
     Mono<Movement> update(String id, Movement movement);
     Mono<Void> delete(String id);
     Flux<Movement> findByClientId(String clientId);
+    Mono<Void> transfer(String fromProductId, String toProductId, Double amount);
 }

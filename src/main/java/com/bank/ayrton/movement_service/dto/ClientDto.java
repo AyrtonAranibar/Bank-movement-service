@@ -9,4 +9,5 @@ public class ClientDto {
     private String name;
     private String dni;
     private String type; //personal,empresarial
+    private ClientSubtype subtype = ClientSubtype.STANDARD; // STANDARD, VIP, PYME
 }

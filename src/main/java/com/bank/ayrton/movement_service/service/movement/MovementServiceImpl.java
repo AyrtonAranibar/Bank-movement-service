@@ -17,8 +17,10 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Date;
+import java.util.List;
 
 //Simple Logging Facade for Java sirve para registrar logs
 @Slf4j
@@ -64,7 +66,7 @@ public class MovementServiceImpl implements MovementService {
                                     if (product.getSubtype() == ProductSubtype.CREDIT_CARD &&
                                             !"personal".equalsIgnoreCase(client.getType()) &&
                                             !"empresarial".equalsIgnoreCase(client.getType())) {
-                                        return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "Tipo de cliente no válido para tarjeta de crédito."));
+                                        return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "Tipo de cliente no valido para tarjeta de crrdito"));
                                     }
 
                                     return validarMovimiento(movement, product);
@@ -80,7 +82,6 @@ public class MovementServiceImpl implements MovementService {
                 });
     }
 
-
     private Mono<Movement> validarMovimiento(Movement movement, ProductDto product) {
         log.info("Validando movimiento para producto: {}", product.getId());
         //plazo fijo solo permite retiro en un día específico del mes
@@ -92,34 +93,33 @@ public class MovementServiceImpl implements MovementService {
             }
         }
 
-        //cuenta de ahorro con limite de movimientos mensuales
-        if (product.getSubtype() == ProductSubtype.SAVINGS && product.getMonthlyMovementLimit() != null) {
-            Date startOfMonth = Date.from(LocalDate.now().withDayOfMonth(1).atStartOfDay(ZoneId.systemDefault()).toInstant());
-            return repository.findByProductIdAndDateAfter(movement.getProductId(), startOfMonth)
-                    .count()
-                    .flatMap(movementCount -> {
-                        log.info("Cantidad de movimientos este mes: {} / Límite permitido: {}", movementCount, product.getMonthlyMovementLimit());
-                        if (movementCount >= product.getMonthlyMovementLimit()) {
+        Date startOfMonth = Date.from(LocalDate.now().withDayOfMonth(1).atStartOfDay(ZoneId.systemDefault()).toInstant());
+        return repository.findByProductIdAndDateAfter(product.getId(), startOfMonth)
+                .count()
+                .flatMap(movementCount -> {
+                    log.info("Cantidad de movimientos este mes: {}", movementCount);
 
-                            return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "Se superó el límite de movimientos mensuales para cuenta de ahorro."));
+                    // Aplica comisión si se excede el límite de transacciones gratuitas
+                    if (product.getFreeTransactionLimit() != null && product.getTransactionFee() != null &&
+                            movementCount >= product.getFreeTransactionLimit()) {
+                        log.info("Aplicando comisión de {} por exceder el límite de {} transacciones gratuitas",
+                                product.getTransactionFee(), product.getFreeTransactionLimit());
+                        movement.setAmount(movement.getAmount() + product.getTransactionFee());
+                    }
+
+                    // no debe exceder el límite de crédito disponible
+                    if ((product.getSubtype() == ProductSubtype.PERSONAL_CREDIT ||
+                            product.getSubtype() == ProductSubtype.BUSINESS_CREDIT ||
+                            product.getSubtype() == ProductSubtype.CREDIT_CARD) &&
+                            movement.getType() == MovementType.WITHDRAWAL) {
+                        if (product.getCreditLimit() != null && movement.getAmount() > product.getCreditLimit()) {
+                            log.warn("Retiro excede el límite de crédito. Monto: {}, Límite: {}", movement.getAmount(), product.getCreditLimit());
+                            return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "El monto excede el límite de crédito."));
                         }
-                        return actualizarBalanceYGuardar(product, movement);
-                    });
-        }
+                    }
 
-        //no debe exceder el límite de credito disponible
-        if ((product.getSubtype() == ProductSubtype.PERSONAL_CREDIT ||
-                product.getSubtype() == ProductSubtype.BUSINESS_CREDIT ||
-                product.getSubtype() == ProductSubtype.CREDIT_CARD) &&
-                movement.getType() == MovementType.WITHDRAWAL) {
-            if (product.getCreditLimit() != null && movement.getAmount() > product.getCreditLimit()) {
-                log.warn("Retiro excede el límite de crédito. Monto: {}, Límite: {}", movement.getAmount(), product.getCreditLimit());
-                return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "El monto excede el límite de crédito."));
-            }
-        }
-
-        //se actualiza el balance y se guarda el movimiento
-        return actualizarBalanceYGuardar(product, movement);
+                    return actualizarBalanceYGuardar(product, movement);
+                });
     }
 
     //ctualiza el saldo del producto dependiendo del tipo de movimiento
@@ -139,6 +139,51 @@ public class MovementServiceImpl implements MovementService {
                 .retrieve()
                 .bodyToMono(ProductDto.class)
                 .then(repository.save(movement));
+    }
+
+    // Realiza una transferencia entre productos
+    @Override
+    public Mono<Void> transfer(String fromProductId, String toProductId, Double amount) {
+        log.info("Iniciando transferencia de {} de {} a {}", amount, fromProductId, toProductId);
+
+        // Obtener producto origen
+        return productWebClient.get()
+                .uri("/api/v1/product/{id}", fromProductId)
+                .retrieve()
+                .bodyToMono(ProductDto.class)
+                .zipWith(productWebClient.get()
+                        .uri("/api/v1/product/{id}", toProductId)
+                        .retrieve()
+                        .bodyToMono(ProductDto.class))
+                .flatMap(tuple -> {
+                    ProductDto from = tuple.getT1();
+                    ProductDto to = tuple.getT2();
+
+                    if (from.getBalance() == null || from.getBalance() < amount) {
+                        return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "Saldo insuficiente en cuenta origen"));
+                    }
+
+                    from.setBalance(from.getBalance() - amount);
+                    to.setBalance((to.getBalance() != null ? to.getBalance() : 0.0) + amount);
+
+                    Movement withdrawal = new Movement(null, from.getClientId(), from.getId(), MovementType.WITHDRAWAL, amount,  LocalDateTime.now());
+                    Movement deposit = new Movement(null, to.getClientId(), to.getId(), MovementType.DEPOSIT, amount,  LocalDateTime.now());
+
+                    Mono<ProductDto> updateFrom = productWebClient.put()
+                            .uri("/api/v1/product/{id}", from.getId())
+                            .bodyValue(from)
+                            .retrieve()
+                            .bodyToMono(ProductDto.class);
+
+                    Mono<ProductDto> updateTo = productWebClient.put()
+                            .uri("/api/v1/product/{id}", to.getId())
+                            .bodyValue(to)
+                            .retrieve()
+                            .bodyToMono(ProductDto.class);
+
+                    return Mono.when(updateFrom, updateTo)
+                            .then(repository.saveAll(List.of(withdrawal, deposit)).then());
+                });
     }
 
     // Actualiza un movimiento existente por ID
@@ -165,3 +210,4 @@ public class MovementServiceImpl implements MovementService {
         return repository.findByClientId(clientId);
     }
 }
+
