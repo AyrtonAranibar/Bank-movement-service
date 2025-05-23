@@ -146,13 +146,13 @@ public class MovementServiceImpl implements MovementService {
     public Mono<Void> transfer(String fromProductId, String toProductId, Double amount) {
         log.info("Iniciando transferencia de {} de {} a {}", amount, fromProductId, toProductId);
 
-        // Obtener producto origen
+        // Obtener producto origen y destino
         return productWebClient.get()
-                .uri("/api/v1/product/{id}", fromProductId)
+                .uri(uriBuilder -> uriBuilder.path("/api/v1/product/{id}").build(fromProductId))
                 .retrieve()
                 .bodyToMono(ProductDto.class)
                 .zipWith(productWebClient.get()
-                        .uri("/api/v1/product/{id}", toProductId)
+                        .uri(uriBuilder -> uriBuilder.path("/api/v1/product/{id}").build(toProductId))
                         .retrieve()
                         .bodyToMono(ProductDto.class))
                 .flatMap(tuple -> {
@@ -166,17 +166,17 @@ public class MovementServiceImpl implements MovementService {
                     from.setBalance(from.getBalance() - amount);
                     to.setBalance((to.getBalance() != null ? to.getBalance() : 0.0) + amount);
 
-                    Movement withdrawal = new Movement(null, from.getClientId(), from.getId(), MovementType.WITHDRAWAL, amount,  LocalDateTime.now());
-                    Movement deposit = new Movement(null, to.getClientId(), to.getId(), MovementType.DEPOSIT, amount,  LocalDateTime.now());
+                    Movement withdrawal = new Movement(null, from.getClientId(), from.getId(), MovementType.WITHDRAWAL, amount, LocalDateTime.now());
+                    Movement deposit = new Movement(null, to.getClientId(), to.getId(), MovementType.DEPOSIT, amount, LocalDateTime.now());
 
                     Mono<ProductDto> updateFrom = productWebClient.put()
-                            .uri("/api/v1/product/{id}", from.getId())
+                            .uri(uriBuilder -> uriBuilder.path("/api/v1/product/{id}").build(from.getId()))
                             .bodyValue(from)
                             .retrieve()
                             .bodyToMono(ProductDto.class);
 
                     Mono<ProductDto> updateTo = productWebClient.put()
-                            .uri("/api/v1/product/{id}", to.getId())
+                            .uri(uriBuilder -> uriBuilder.path("/api/v1/product/{id}").build(to.getId()))
                             .bodyValue(to)
                             .retrieve()
                             .bodyToMono(ProductDto.class);

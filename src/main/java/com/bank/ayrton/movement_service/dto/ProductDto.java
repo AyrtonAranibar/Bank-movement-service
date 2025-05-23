@@ -2,7 +2,6 @@ package com.bank.ayrton.movement_service.dto;
 
 import com.bank.ayrton.movement_service.entity.ProductSubtype;
 import lombok.Data;
-import org.springframework.data.annotation.Id;
 
 import java.util.List;
 
@@ -10,7 +9,6 @@ import java.util.List;
 // el DTO nos permite manejar el objeto de otro microservicio de forma sencilla
 @Data
 public class ProductDto {
-    @Id
     private String id;
     private String type;    // activo o pasivo
     private ProductSubtype subtype;   // SAVINGS,Ahorro - CURRENT_ACCOUNT,Cuenta corriente -
