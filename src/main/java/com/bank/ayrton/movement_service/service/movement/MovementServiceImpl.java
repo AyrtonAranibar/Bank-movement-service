@@ -4,6 +4,7 @@ import com.bank.ayrton.movement_service.api.movement.MovementRepository;
 import com.bank.ayrton.movement_service.api.movement.MovementService;
 import com.bank.ayrton.movement_service.dto.ClientDto;
 import com.bank.ayrton.movement_service.dto.ProductDto;
+import com.bank.ayrton.movement_service.dto.ThirdPartyPaymentRequest;
 import com.bank.ayrton.movement_service.entity.Movement;
 import com.bank.ayrton.movement_service.entity.MovementType;
 import com.bank.ayrton.movement_service.entity.ProductSubtype;
@@ -122,7 +123,7 @@ public class MovementServiceImpl implements MovementService {
                 });
     }
 
-    //ctualiza el saldo del producto dependiendo del tipo de movimiento
+    //actualiza el saldo del producto dependiendo del tipo de movimiento
     private Mono<Movement> actualizarBalanceYGuardar(ProductDto product, Movement movement) {
         double currentBalance = product.getBalance() != null ? product.getBalance() : 0.0;
 
@@ -209,5 +210,88 @@ public class MovementServiceImpl implements MovementService {
         log.info("Buscando movimientos por clientId: {}", clientId);
         return repository.findByClientId(clientId);
     }
+
+    @Override
+    public Flux<Movement> getMovementsByProductAndDateRange(String productId, LocalDate from, LocalDate to) {
+        return repository.findByProductId(productId)
+                .filter(movement -> {
+                    LocalDate date = movement.getDate().toLocalDate();
+                    return !date.isBefore(from) && !date.isAfter(to);
+                });
+    }
+
+    @Override
+    public Mono<Void> payThirdParty(ThirdPartyPaymentRequest request) {
+        String fromId = request.getFromProductId();
+        String toId = request.getToProductId();
+        Double amount = request.getAmount();
+
+        Mono<ProductDto> fromMono = productWebClient.get()
+                .uri("/api/v1/product/{id}", fromId)
+                .retrieve()
+                .bodyToMono(ProductDto.class);
+
+        Mono<ProductDto> toMono = productWebClient.get()
+                .uri("/api/v1/product/{id}", toId)
+                .retrieve()
+                .bodyToMono(ProductDto.class);
+
+        return Mono.zip(fromMono, toMono)
+                .flatMap(tuple -> {
+                    ProductDto from = tuple.getT1();
+                    ProductDto to = tuple.getT2();
+
+                    if (from.getClientId().equals(to.getClientId())) {
+                        return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                                "No se puede pagar un producto del mismo cliente"));
+                    }
+
+                    if (!"activo".equalsIgnoreCase(to.getType())) {
+                        return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                                "El producto de destino no es un crédito"));
+                    }
+
+                    if (from.getBalance() < amount) {
+                        return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                                "Saldo insuficiente en la cuenta origen"));
+                    }
+
+                    // disminure el balance del origen
+                    from.setBalance(from.getBalance() - amount);
+
+                    // aumenta el credito
+                    to.setBalance(to.getBalance() + amount);
+
+                    Movement debit = new Movement(
+                            null,
+                            from.getClientId(),         // id cliente q paga
+                            fromId,
+                            MovementType.THIRD_PARTY_PAYMENT_SENT,
+                            -amount,
+                            LocalDateTime.now()
+                    );
+                    Movement credit = new Movement(
+                            null,
+                            to.getClientId(),           // id cliente destino
+                            toId,
+                            MovementType.THIRD_PARTY_PAYMENT_RECEIVED,
+                            amount,
+                            LocalDateTime.now()
+                    );
+
+                    Mono<Void> saveMovements = repository.saveAll(List.of(debit, credit)).then();
+
+                    Mono<Void> updateProducts = Mono.when(
+                            productWebClient.put().uri("/api/v1/product/" + from.getId())
+                                    .bodyValue(from).retrieve().bodyToMono(Void.class),
+                            productWebClient.put().uri("/api/v1/product/" + to.getId())
+                                    .bodyValue(to).retrieve().bodyToMono(Void.class)
+                    );
+
+                    return saveMovements.then(updateProducts);
+                });
+    }
+
+
 }
 

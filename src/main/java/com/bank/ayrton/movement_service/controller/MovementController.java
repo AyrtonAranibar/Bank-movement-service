@@ -1,13 +1,17 @@
 package com.bank.ayrton.movement_service.controller;
 
 import com.bank.ayrton.movement_service.api.movement.MovementService;
+import com.bank.ayrton.movement_service.dto.ThirdPartyPaymentRequest;
 import com.bank.ayrton.movement_service.entity.Movement;
 import lombok.RequiredArgsConstructor;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+
+import java.time.LocalDate;
 
 @RestController
 @RequestMapping("/api/v1/movement")
@@ -57,5 +61,19 @@ public class MovementController {
                                @RequestParam String toProductId,
                                @RequestParam Double amount) {
         return service.transfer(fromProductId, toProductId, amount);
+    }
+
+    @GetMapping("/product/{productId}")
+    public Flux<Movement> getMovementsByProductAndDateRange(
+            @PathVariable String productId,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
+        return service.getMovementsByProductAndDateRange(productId, from, to);
+    }
+
+    @PostMapping("/pay-third-party")
+    public Mono<ResponseEntity<String>> payThirdParty(@RequestBody ThirdPartyPaymentRequest request) {
+        return service.payThirdParty(request)
+                .thenReturn(ResponseEntity.ok("Pago realizado con éxito"));
     }
 }
