@@ -70,6 +70,29 @@
 			<artifactId>mockito-core</artifactId>
 			<scope>test</scope>
 		</dependency>
+
+		<!-- kafka para comunicarser con movements service (asi no usar rest) -->
+		<dependency>
+			<groupId>org.springframework.kafka</groupId>
+			<artifactId>spring-kafka</artifactId>
+		</dependency>
+
+		<!-- redis para almacenar a los clientes en cache -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-data-redis-reactive</artifactId>
+		</dependency>
+		<!-- Necesario para ReactiveRedisTemplate y serializadores -->
+		<dependency>
+			<groupId>org.springframework.data</groupId>
+			<artifactId>spring-data-redis</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>io.lettuce</groupId>
+			<artifactId>lettuce-core</artifactId>
+		</dependency>
+
 	</dependencies>
 	<dependencyManagement>
 		<dependencies>
@@ -123,7 +146,6 @@
 				</executions>
 				<configuration>
 					<configLocation>google_checks.xml</configLocation> <!-- puedes usar sun_checks.xml si prefieres -->
-					<encoding>UTF-8</encoding>
 					<consoleOutput>true</consoleOutput>
 					<failsOnError>true</failsOnError>
 				</configuration>
@@ -149,5 +171,4 @@
             </plugin>
 		</plugins>
 	</build>
-
 </project>

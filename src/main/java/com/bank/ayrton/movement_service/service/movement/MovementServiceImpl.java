@@ -5,17 +5,24 @@ import com.bank.ayrton.movement_service.api.movement.MovementService;
 import com.bank.ayrton.movement_service.dto.ClientDto;
 import com.bank.ayrton.movement_service.dto.ProductDto;
 import com.bank.ayrton.movement_service.dto.ThirdPartyPaymentRequest;
+import com.bank.ayrton.movement_service.dto.YankiMovementEvent;
 import com.bank.ayrton.movement_service.entity.Movement;
 import com.bank.ayrton.movement_service.entity.MovementType;
 import com.bank.ayrton.movement_service.entity.ProductSubtype;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.http.HttpStatus;
+import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import org.springframework.data.redis.serializer.Jackson2JsonRedisSerializer;
+import org.springframework.data.redis.serializer.StringRedisSerializer;
+import org.springframework.data.redis.serializer.RedisSerializationContext;
+import org.springframework.data.redis.connection.ReactiveRedisConnectionFactory;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -32,6 +39,17 @@ public class MovementServiceImpl implements MovementService {
     private final MovementRepository repository;
     private final WebClient clientWebClient;
     private final WebClient productWebClient;
+    private final ReactiveRedisTemplate<String, ClientDto> redisTemplate;
+
+    @KafkaListener(topics = "yanki-movements", groupId = "movement-group")
+    public void handleYankiMovement(YankiMovementEvent event) {
+        log.info("Recibiendo transferencia Yanki: de {} a {} por {}", event.getFromCard(), event.getToCard(), event.getAmount());
+
+        transfer(event.getFromCard(), event.getToCard(), event.getAmount())
+                .doOnSuccess(unused -> log.info("Transferencia Yanki procesada correctamente"))
+                .doOnError(error -> log.error("Error al procesar transferencia Yanki: {}", error.getMessage()))
+                .subscribe();
+    }
 
     // Lista los movimientos
     @Override
@@ -51,35 +69,54 @@ public class MovementServiceImpl implements MovementService {
     @Override
     public Mono<Movement> save(Movement movement) {
         log.info("Registrando nuevo movimiento: {}", movement);
-        return clientWebClient.get()
-                .uri("/api/v1/client/{id}", movement.getClientId())
-                .retrieve()
-                .bodyToMono(ClientDto.class)
-                .switchIfEmpty(Mono.error(new ResponseStatusException(HttpStatus.NOT_FOUND, "Client not found")))
-                .flatMap(client ->
+
+        /* Obtener el cliente: cache Redis → fallback WebClient */
+        Mono<ClientDto> clienteMono =
+                redisTemplate.opsForValue()
+                        .get(movement.getClientId())                       // busca en cache
+                        .switchIfEmpty(Mono.defer(() ->                   // si no está
+                                clientWebClient.get()                     // lo trae del MS cliente
+                                        .uri("/api/v1/client/{id}", movement.getClientId())
+                                        .retrieve()
+                                        .bodyToMono(ClientDto.class)
+                                        .doOnNext(c ->                    // y lo cachea
+                                                redisTemplate.opsForValue()
+                                                        .set(c.getId(), c)
+                                                        .subscribe())
+                        ));
+
+        /* Una vez obtenido el cliente, valida el producto y procesa */
+        return clienteMono.flatMap(cliente ->
                         productWebClient.get()
                                 .uri("/api/v1/product/{id}", movement.getProductId())
                                 .retrieve()
                                 .bodyToMono(ProductDto.class)
-                                .switchIfEmpty(Mono.error(new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found")))
-                                .flatMap(product -> {
-                                    // Validación: el cliente debe tener tipo válido para tarjeta de crédito
-                                    if (product.getSubtype() == ProductSubtype.CREDIT_CARD &&
-                                            !"personal".equalsIgnoreCase(client.getType()) &&
-                                            !"empresarial".equalsIgnoreCase(client.getType())) {
-                                        return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "Tipo de cliente no valido para tarjeta de crrdito"));
+                                .switchIfEmpty(Mono.error(
+                                        new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found")))
+                                .flatMap(producto -> {
+
+                                    // regla: solo ‘personal’ o ‘empresarial’ pueden tener tarjeta de crédito
+                                    if (producto.getSubtype() == ProductSubtype.CREDIT_CARD &&
+                                            !"personal".equalsIgnoreCase(cliente.getType()) &&
+                                            !"empresarial".equalsIgnoreCase(cliente.getType())) {
+                                        return Mono.error(new ResponseStatusException(
+                                                HttpStatus.BAD_REQUEST,
+                                                "Tipo de cliente no válido para tarjeta de crédito"));
                                     }
 
-                                    return validarMovimiento(movement, product);
+                                    // resto de la lógica (ya la tenías)
+                                    return validarMovimiento(movement, producto);
                                 })
                 )
-                .onErrorResume(ResponseStatusException.class, error -> {
-                    log.error("Error esperado: {}", error.getReason());
-                    return Mono.error(error);
+                /*  Manejo de errores común */
+                .onErrorResume(ResponseStatusException.class, ex -> {
+                    log.error("Error esperado: {}", ex.getReason());
+                    return Mono.error(ex);
                 })
-                .onErrorResume(error -> {
-                    log.error("Error inesperado: {}", error.getMessage());
-                    return Mono.error(new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Error inesperado"));
+                .onErrorResume(th -> {
+                    log.error("Error inesperado: {}", th.getMessage(), th);
+                    return Mono.error(new ResponseStatusException(
+                            HttpStatus.INTERNAL_SERVER_ERROR, "Error inesperado", th));
                 });
     }
 
@@ -291,7 +328,5 @@ public class MovementServiceImpl implements MovementService {
                     return saveMovements.then(updateProducts);
                 });
     }
-
-
 }
 

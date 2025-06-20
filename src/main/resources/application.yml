@@ -10,4 +10,16 @@ spring:
     mongodb:
       uri: mongodb://localhost:27017/movement-database
   kafka:
-    bootstrap-servers: localhost:9092
+    bootstrap-servers: localhost:9092 #direccion del broker
+    consumer:
+      group-id: movement-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer #los eventos son mopeados ocmo objetos
+      properties:
+        spring.json.trusted.packages: '*'
+    listener:
+      ack-mode: record
+  redis:
+    host: localhost
+    port: 6379
