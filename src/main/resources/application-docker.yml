@@ -4,13 +4,16 @@ server:
 spring:
   application:
     name: movement-service
+
   config:
-    import: optional:configserver:http://localhost:8888
+    import: optional:configserver:http://config-server:8888
+
   data:
     mongodb:
-      uri: mongodb://localhost:27017/movement-database
+      uri: mongodb://host.docker.internal:27017/movement-database
+
   kafka:
-    bootstrap-servers: localhost:9092 #direccion del broker
+    bootstrap-servers: kafka:9092
     consumer:
       group-id: movement-group
       auto-offset-reset: earliest
@@ -28,12 +31,12 @@ spring:
       ack-mode: record
 
   redis:
-    host: localhost
+    host: redis
     port: 6379
 
 eureka:
   client:
     service-url:
-      defaultZone: http://localhost:8761/eureka
+      defaultZone: http://eureka-server:8761/eureka
     register-with-eureka: true
     fetch-registry: true

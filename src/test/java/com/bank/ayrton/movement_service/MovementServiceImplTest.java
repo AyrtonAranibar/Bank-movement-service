@@ -1,12 +1,17 @@
 package com.bank.ayrton.movement_service;
 
 import com.bank.ayrton.movement_service.api.movement.MovementRepository;
+import com.bank.ayrton.movement_service.dto.ClientDto;
 import com.bank.ayrton.movement_service.entity.Movement;
 import com.bank.ayrton.movement_service.entity.MovementType;
 import com.bank.ayrton.movement_service.service.movement.MovementServiceImpl;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -16,12 +21,13 @@ import java.time.LocalDateTime;
 
 import static org.mockito.Mockito.*;
 
-@SpringBootTest
+@ExtendWith(MockitoExtension.class)
 public class MovementServiceImplTest {
 
     private MovementRepository repository;
     private WebClient clientWebClient;
     private WebClient productWebClient;
+    private ReactiveRedisTemplate<String, ClientDto> redisTemplate;
     private MovementServiceImpl service;
 
     @BeforeEach
@@ -29,13 +35,16 @@ public class MovementServiceImplTest {
         repository = mock(MovementRepository.class);
         clientWebClient = mock(WebClient.class, RETURNS_DEEP_STUBS);
         productWebClient = mock(WebClient.class, RETURNS_DEEP_STUBS);
-        service = new MovementServiceImpl(repository, clientWebClient, productWebClient);
+        redisTemplate = mock(ReactiveRedisTemplate.class);
+
+        service = new MovementServiceImpl(repository, clientWebClient, productWebClient, redisTemplate); // ← AGREGA EL QUINTO ARGUMENTO
     }
 
     @Test
     void testFindAll() {
         Movement movement = new Movement();
         movement.setId("123");
+
         when(repository.findAll()).thenReturn(Flux.just(movement));
 
         StepVerifier.create(service.findAll())
@@ -47,6 +56,7 @@ public class MovementServiceImplTest {
     void testFindById() {
         Movement movement = new Movement();
         movement.setId("abc");
+
         when(repository.findById("abc")).thenReturn(Mono.just(movement));
 
         StepVerifier.create(service.findById("abc"))

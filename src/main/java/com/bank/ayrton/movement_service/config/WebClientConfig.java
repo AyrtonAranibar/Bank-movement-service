@@ -20,4 +20,10 @@ public class WebClientConfig {
                 .baseUrl("http://localhost:8082") // URL del servicio producto
                 .build();
     }
+
+    @Bean
+    public WebClient bootcoinWebClient(WebClient.Builder builder) {
+        return builder.baseUrl("http://localhost:8087/api/v1/bootcoin")// URL del servicio bootcoin
+                .build();
+    }
 }

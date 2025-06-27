@@ -85,6 +85,7 @@ public class MovementServiceImpl implements MovementService {
                                                         .subscribe())
                         ));
 
+
         /* Una vez obtenido el cliente, valida el producto y procesa */
         return clienteMono.flatMap(cliente ->
                         productWebClient.get()
@@ -183,6 +184,17 @@ public class MovementServiceImpl implements MovementService {
     @Override
     public Mono<Void> transfer(String fromProductId, String toProductId, Double amount) {
         log.info("Iniciando transferencia de {} de {} a {}", amount, fromProductId, toProductId);
+
+        // Validación básica de nulos o vacíos
+        if (fromProductId == null || fromProductId.isBlank() || toProductId == null || toProductId.isBlank()) {
+            log.error("ID de producto nulo o vacío: from={}, to={}", fromProductId, toProductId);
+            return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "ID de producto nulo o vacío"));
+        }
+
+        if (amount == null || amount <= 0) {
+            log.error("Monto inválido en transferencia: {}", amount);
+            return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "Monto inválido"));
+        }
 
         // Obtener producto origen y destino
         return productWebClient.get()
