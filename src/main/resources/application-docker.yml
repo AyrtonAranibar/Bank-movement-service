@@ -31,12 +31,12 @@ spring:
       ack-mode: record
 
   redis:
-    host: redis
+    host: host.docker.internal
     port: 6379
 
 eureka:
   client:
     service-url:
-      defaultZone: http://eureka-server:8761/eureka
+      defaultZone: http://host.docker.internal:8761/eureka
     register-with-eureka: true
     fetch-registry: true
